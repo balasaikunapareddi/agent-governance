@@ -102,7 +102,7 @@ summary printed.
 ## Run the tests
 
 ```bash
-python -m pytest tests/ -q        # 47 offline tests, deterministic stub LLM
+python -m pytest tests/ -q        # 66 offline tests, deterministic stub LLM
 ```
 
 Covered: each control in isolation, both attacks end-to-end, audit
@@ -126,7 +126,7 @@ Two attempts via `run_live.py` both failed before any turn ran:
 `ServiceUnavailableError: GeminiException 503 — "This model is currently
 experiencing high demand"` on `gemini-3.5-flash-lite` (attempt 1, then
 retry after ~3 min, attempt 2 — same 503). No live turns completed, so no
-live blocked/allowed numbers exist yet; the offline demo + 47 tests are the
+live blocked/allowed numbers exist yet; the offline demo + 66 tests are the
 verified evidence. Re-run `scripts/live_test.py` when Gemini recovers —
 nothing in the repo needs changing (the first attempt also caught a real
 bug: LiteLLM rejects `temperature` for this model, fixed by dropping the
@@ -147,7 +147,20 @@ parameter).
 - The audit log is append-only in memory (+ JSONL file); it is not
   tamper-evident (no hashing/chaining) and has no retention policy.
 - Guardrails scan text, not meaning: a model that paraphrases a forbidden
-  claim ("the money is already on its way to you") may pass the regex.
+  claim in a novel way ("the cash is headed your way") may pass the regex.
   The approval gate is the backstop — nothing was ever executed, so the
-  claim is false regardless of wording.
+  claim is false regardless of wording. Common paraphrases are now
+  covered and base64/zero-width/spaced variants are decoded or
+  normalised before scanning, but a fully novel encoding or a secret
+  split digit-by-digit ("0 7 8 …") can still slip past the scan.
+- The guardrail scans one reply at a time plus a cross-turn check for PII
+  assembled across two replies. An injection planted in an *earlier*
+  turn's user message stays in the conversation history and is not
+  re-scanned on later turns — the layered controls (provenance block,
+  approval gate) still stop its effects, but the history itself is not
+  sanitised.
+- The output scan does not redact email addresses: a reply may echo the
+  customer's own email from a tool result. That is the customer's own
+  address in a 1:1 support chat, not a restricted record — but it is a
+  deliberate gap, not an oversight.
 - No real PII is involved; the "restricted" record is fictional.

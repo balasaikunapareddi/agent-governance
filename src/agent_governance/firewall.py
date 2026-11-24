@@ -55,6 +55,12 @@ class ToolFirewall:
         return self._allowed
 
     def check(self, tool_name: str) -> FirewallDecision:
+        # A non-string tool name can never match the allowlist — and
+        # `tool_name in <frozenset>` would raise TypeError on an
+        # unhashable value (e.g. a list from malformed model JSON).
+        # Deny it instead of crashing the runtime loop.
+        if not isinstance(tool_name, str):
+            return FirewallDecision(False, "tool_name_invalid")
         if tool_name in NEVER_ALLOWED:
             return FirewallDecision(False, f"tool_never_allowed:{tool_name}")
         if tool_name in self.extra_denied:

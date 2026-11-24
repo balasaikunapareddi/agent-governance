@@ -61,3 +61,34 @@ def test_audit_blocked_helper_finds_blocks():
     log.record("intake", "a")
     log.record("tool_blocked", "export_all_customers")
     assert len(log.blocked()) == 1
+
+
+# -- append-only file behaviour (review fixes) -------------------------
+
+def test_audit_log_does_not_truncate_existing_file(tmp_path):
+    import json
+    path = tmp_path / "audit.jsonl"
+    log = AuditLog(path)
+    log.record("intake", "a")
+    log.record("intake", "b")
+    # A second AuditLog on the same path used to wipe the file.
+    log2 = AuditLog(path)
+    log2.record("intake", "c")
+    lines = path.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 3
+    assert [json.loads(line)["seq"] for line in lines] == [1, 2, 3]
+    assert [json.loads(line)["detail"] for line in lines] == ["a", "b", "c"]
+
+
+def test_audit_log_seq_resumes_after_reopen_with_gap(tmp_path):
+    import json
+    path = tmp_path / "audit.jsonl"
+    path.write_text('{"seq": 1, "kind": "intake", "detail": "a"}\n'
+                    'not-json-garbage\n'
+                    '{"seq": 7, "kind": "intake", "detail": "b"}\n',
+                    encoding="utf-8")
+    log = AuditLog(path)
+    event = log.record("intake", "c")
+    assert event.seq == 8
+    lines = path.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 4  # corrupt line preserved, new event appended

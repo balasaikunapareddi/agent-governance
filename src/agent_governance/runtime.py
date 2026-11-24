@@ -106,11 +106,25 @@ class GovernedRuntime:
     def _decide(self, state: GovState) -> GovState:
         state["steps"] = state.get("steps", 0) + 1
         messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}]
+        # state["messages"] already holds every prior tool result, each
+        # with its TOOL_RESULT_REMINDER attached by _execute — append
+        # nothing here, or the latest result is sent to the model twice.
         messages.extend(state["messages"])
-        if state.get("observation"):
-            messages.append({"role": "tool",
-                             "content": state["observation"] + "\n" + TOOL_RESULT_REMINDER})
-        raw = self.llm.complete(messages)
+        try:
+            raw = self.llm.complete(messages)
+        except Exception as exc:
+            # A backend failure (503, timeout, transport error) must fail
+            # loudly AND safely: no tool runs, no action is taken, the
+            # failure is audited, and the customer gets a safe reply —
+            # never an unhandled exception out of run().
+            self.audit.record("llm_error", f"model call failed: {exc!r}"[:200],
+                              reason="llm_backend_failure", control="runtime")
+            state["pending_reply"] = (
+                "Sorry — I couldn't reach my help system just now, so I "
+                "haven't looked anything up or changed anything. "
+                "Please try again in a moment.")
+            state["pending_tool"] = {}
+            return state
         self.audit.record("llm_decision", f"model output: {raw[:200]}", control="runtime")
         action = _parse_action(raw)
         if action is None:
@@ -137,6 +151,12 @@ class GovernedRuntime:
             state["observation"] = (
                 f"BLOCKED BY FIREWALL: {decision.reason}. This tool is not "
                 f"available for this task. Do not retry it; reply to the customer instead.")
+            # The block notice must reach the model as a tool message, or
+            # the next decide sees the same history as before and retries
+            # the blocked tool until MAX_STEPS. (_decide no longer appends
+            # state["observation"] — see _execute — so each producer of an
+            # observation appends its own message, exactly once.)
+            state["messages"].append({"role": "tool", "content": state["observation"]})
             state["pending_tool"] = {}
         return state
 
@@ -156,7 +176,13 @@ class GovernedRuntime:
                               reason="untrusted_source", control="provenance")
         state["observation"] = observation
         state["pending_tool"] = {}
-        state["messages"].append({"role": "tool", "content": observation})
+        # The observation goes into the message history exactly once, with
+        # the TOOL_RESULT_REMINDER attached — so the model sees every tool
+        # result labelled as data, and _decide must not append it a second
+        # time (it used to, which sent the latest result twice: once raw,
+        # without the reminder, and once labelled).
+        state["messages"].append({"role": "tool",
+                                  "content": observation + "\n" + TOOL_RESULT_REMINDER})
         return state
 
     def _guardrail(self, state: GovState) -> GovState:
@@ -175,6 +201,26 @@ class GovernedRuntime:
                                   f"reply redacted: {scan.hits}",
                                   reason="pii_or_secret_in_reply", control="guardrails")
                 reply = scan.redacted_text
+        else:
+            # Cross-turn assembly: a secret split across two replies
+            # ("078-05-" now, "1120" next turn) is clean in each reply
+            # alone. Prior replies were already scanned and sent, so any
+            # PII pattern that matches the concatenation must span the
+            # boundary between a sent reply and this one — block it.
+            prior = "".join(
+                m.get("content", "") for m in state.get("messages", [])
+                if m.get("role") == "assistant")
+            if prior:
+                combined = scan_output(prior + reply)
+                if not combined.clean and any(
+                        h.startswith("pii:") for h in combined.hits):
+                    self.audit.record(
+                        "guardrail_block",
+                        f"reply blocked: PII assembled across replies: {combined.hits}",
+                        reason="pii_assembled_across_replies", control="guardrails")
+                    reply = ("I can't share that detail here — it looks like "
+                             "sensitive information split across messages. "
+                             "Nothing was sent.")
         self.audit.record("reply_sent", reply[:200], reason="ok", control="guardrails")
         state["pending_reply"] = reply
         return state
@@ -220,7 +266,14 @@ class GovernedRuntime:
 
 
 def _parse_action(raw: str) -> dict | None:
-    """Parse the model's JSON action. Returns None if unparseable."""
+    """Parse the model's JSON action. Returns None if unparseable.
+
+    The shape is validated, not just the JSON: a tool must be a string
+    and args a dict, a reply must be a string. A malformed shape (tool
+    as a list, args as a list, reply null) is treated as an unparseable
+    reply, never as a tool call — and it must never reach the firewall
+    as an unhashable value, which used to crash the graph.
+    """
     match = re.search(r"\{.*\}", raw, re.S)
     if not match:
         return None
@@ -228,4 +281,15 @@ def _parse_action(raw: str) -> dict | None:
         action = json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
-    return action if isinstance(action, dict) else None
+    if not isinstance(action, dict):
+        return None
+    if "reply" in action:
+        return action if isinstance(action["reply"], str) else None
+    if "tool" in action:
+        if not isinstance(action["tool"], str):
+            return None
+        args = action.get("args", {})
+        if not isinstance(args, dict):
+            return None
+        return action
+    return None

@@ -41,3 +41,13 @@ def test_high_impact_tools_are_marked_not_executed_by_firewall():
         assert fw.is_high_impact(tool)
         assert fw.check(tool).allowed  # allowed *to request*; execution is gated
     assert not fw.is_high_impact("lookup_order")
+
+
+def test_non_string_tool_name_denied_not_crash():
+    # Malformed model JSON can produce a list/dict/None tool name.
+    # `name in <frozenset>` raises TypeError on an unhashable value —
+    # the firewall must deny it, not crash the runtime loop.
+    fw = ToolFirewall(task="support")
+    for bad in (["issue_refund"], {"tool": "issue_refund"}, None, 42):
+        d = fw.check(bad)
+        assert not d.allowed and d.reason == "tool_name_invalid", bad
