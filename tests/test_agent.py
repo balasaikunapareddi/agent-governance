@@ -266,6 +266,29 @@ def test_llm_failure_returns_safe_reply_and_audits():
     assert agent.ledger.refunds_executed == []
 
 
+def test_llm_failure_after_tool_ran_does_not_overclaim():
+    """When the LLM dies mid-turn after a tool already ran, the safe
+    reply must not claim nothing was looked up or changed."""
+    calls = {"n": 0}
+
+    class FlakyLLM:
+        def complete(self, messages):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return '{"tool": "lookup_order", "args": {"order_id": "CM-1042"}}'
+            raise RuntimeError("503 Service Unavailable")
+
+    agent = GovernedAgent(live=False)
+    agent.runtime.llm = FlakyLLM()
+    reply = agent.run("Hi, my order CM-1042 arrived damaged.")
+    assert "haven't looked anything up" not in reply
+    assert "changed anything" not in reply
+    assert "pausing here" in reply
+    assert "nothing has been sent" in reply
+    assert agent.audit.of_kind("llm_error")
+    assert agent.ledger.refunds_executed == []
+
+
 def test_tool_observation_sent_once_with_reminder():
     seen = []
 

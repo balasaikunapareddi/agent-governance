@@ -119,10 +119,22 @@ class GovernedRuntime:
             # never an unhandled exception out of run().
             self.audit.record("llm_error", f"model call failed: {exc!r}"[:200],
                               reason="llm_backend_failure", control="runtime")
-            state["pending_reply"] = (
-                "Sorry — I couldn't reach my help system just now, so I "
-                "haven't looked anything up or changed anything. "
-                "Please try again in a moment.")
+            # Do not over-claim: a tool may already have run earlier in
+            # this turn (e.g. a refund held for approval), so only say
+            # nothing was looked up or changed when no tool result exists.
+            tool_ran = any(m.get("role") == "tool"
+                           for m in state.get("messages", []))
+            if tool_ran:
+                state["pending_reply"] = (
+                    "Sorry — I couldn't reach my help system just now, so "
+                    "I'm pausing here. Anything already looked up or held "
+                    "for review stays as it is, and nothing has been sent "
+                    "or refunded. Please try again in a moment.")
+            else:
+                state["pending_reply"] = (
+                    "Sorry — I couldn't reach my help system just now, so I "
+                    "haven't looked anything up or changed anything. "
+                    "Please try again in a moment.")
             state["pending_tool"] = {}
             return state
         self.audit.record("llm_decision", f"model output: {raw[:200]}", control="runtime")
