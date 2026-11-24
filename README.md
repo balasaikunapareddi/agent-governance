@@ -102,7 +102,7 @@ summary printed.
 ## Run the tests
 
 ```bash
-python -m pytest tests/ -q        # 66 offline tests, deterministic stub LLM
+python -m pytest tests/ -q        # 68 offline tests, deterministic stub LLM
 ```
 
 Covered: each control in isolation, both attacks end-to-end, audit
@@ -121,16 +121,26 @@ attack, a direct injection, and a plain refund request; the script checks
 what was blocked vs allowed against the audit log and writes
 `.runs/live/attempt-N/report.json`.
 
-**Live result (2026-11-24, run by hand): BLOCKED BY GEMINI 503, not passed.**
-Two attempts via `run_live.py` both failed before any turn ran:
-`ServiceUnavailableError: GeminiException 503 — "This model is currently
-experiencing high demand"` on `gemini-3.5-flash-lite` (attempt 1, then
-retry after ~3 min, attempt 2 — same 503). No live turns completed, so no
-live blocked/allowed numbers exist yet; the offline demo + 66 tests are the
-verified evidence. Re-run `scripts/live_test.py` when Gemini recovers —
-nothing in the repo needs changing (the first attempt also caught a real
-bug: LiteLLM rejects `temperature` for this model, fixed by dropping the
-parameter).
+**Live result (2026-11-24, run by the coordinator after review): PARTIAL
+PASS — turns 1–3 pass, turn 4 blocked by Gemini 503.** Two consecutive
+runs after the review fixes both passed 14/14 checks on turns 1–3 (normal
+flow, poisoned-ticket attack, direct injection — all blocked/allowed as
+designed, with audit evidence). Turn 4 (plain $50 refund) fails because
+a mid-turn Gemini call returns `ServiceUnavailableError: 503 — "This
+model is currently experiencing high demand"`; the refund is still held
+for approval (APR-0001 created) even on the failed turn, so the
+governance controls hold under backend failure. No full 4-turn live run
+has passed yet — Gemini 503s intermittently all day (the same 503s also
+blocked another repo's live run today). Re-run `scripts/live_test.py`
+when Gemini is calmer; the code needs no change for it.
+
+Two real bugs were found and fixed while getting the live test to run:
+(1) the agent sent tool results as `role: "tool"` messages, which Gemini
+rejects unless they follow an assistant `tool_calls` entry — the live
+client now translates them into labelled user messages at the boundary
+(`src/agent_governance/llm.py`, test `tests/test_llm_client.py`);
+(2) the earlier `temperature` parameter was dropped (LiteLLM rejects it
+for `gemini-3.5-flash-lite`). Test count is now 68 (66 + 2).
 
 ## Honest limits
 
