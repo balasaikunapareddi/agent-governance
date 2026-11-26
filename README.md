@@ -1,14 +1,12 @@
 # agent-governance
 
-A governed support agent in the spirit of Palanisamy Ramasamy's governance
-stack: five controls enforced in code — trusted data with provenance,
-least-privilege access, output guardrails, human approval for high-impact
-actions, and a full audit log — plus runtime checks, escalation, and
-rollback.
+A governed support agent with five controls enforced in code — trusted
+data with provenance, least-privilege access, output guardrails, human
+approval for high-impact actions, and a full audit log — plus runtime
+checks, escalation, and rollback.
 
-Inspired by [Palanisamy Ramasamy's post](https://lnkd.in/p/gAjj4EVD):
-*"Your AI agent gave the right answer. It was still a security incident —
-because it accessed data it was never supposed to see."*
+The core idea: an agent can give the right answer and still cause a
+security incident — by accessing data it was never supposed to see.
 
 ## The problem
 
